@@ -5,13 +5,11 @@ import csv
 from django.db.models import Q
 from django.http import HttpResponse
 from django.template import Context
-from django.shortcuts import render_to_response, redirect
 from django.views.decorators.cache import never_cache
 
 from tardis.tardis_portal.auth import decorators as authz
-from tardis.tardis_portal.creativecommonshandler import CreativeCommonsHandler
 from tardis.tardis_portal.models import Experiment, DatafileParameter, ParameterName, Dataset_File
-from tardis.tardis_portal.shortcuts import render_response_index
+from tardis.tardis_portal.shortcuts import render_response_index, return_response_error
 
 import json
 
@@ -27,12 +25,12 @@ def index(request, experiment_id):
     context['show_popout_link'] = True
     return HttpResponse(render_response_index(request, url, context))
 
+
 def _context(experiment_id):
     c = Context()
     experiment = Experiment.objects.get(pk=experiment_id)
 
     parameter_names = ParameterName.objects.filter(datafileparameter__parameterset__dataset_file__dataset__experiment=experiment).distinct()
-    datafiles = Dataset_File.objects.filter(dataset__experiment=experiment)
 
     descs = [{'mDataProp': 'filename', 'sTitle': 'filename'}]
     for x in parameter_names:
@@ -52,12 +50,21 @@ def full_page(request, experiment_id):
 @authz.experiment_access_required
 def table(request, experiment_id):
     # http://datatables.net/usage/server-side
-    logger.debug(request.GET)
-    if int(request.GET['iSortingCols']) != 1:
-        raise Exception('this should not happen')
-    sort_col_index = request.GET['iSortCol_0']
-    sort_col_name = request.GET['mDataProp_' + sort_col_index]
-    sort_desc = request.GET['sSortDir_0'] == 'desc'
+    if len(request.GET) == 0:
+        return return_response_error(request)
+
+    sort_col_index = ''
+    sort_col_name = ''
+    sort_desc = ''
+    try:
+        if int(request.GET['iSortingCols']) != 1:
+            return return_response_error(request)
+
+        sort_col_index = request.GET['iSortCol_0']
+        sort_col_name = request.GET['mDataProp_' + sort_col_index]
+        sort_desc = request.GET['sSortDir_0'] == 'desc'
+    except:
+        return return_response_error(request)
 
     experiment = Experiment.objects.get(pk=experiment_id)
 
@@ -74,11 +81,17 @@ def table(request, experiment_id):
         datafiles = datafiles.order_by('filename')
         post_filter = True
 
-    filter = request.GET['sSearch']
-    filtered_datafiles = _filter(datafiles, filter)
+    filter = ''
+    limit = ''
+    offset = ''
+    try: 
+        filter = request.GET['sSearch']
+        limit = int(request.GET['iDisplayLength'])
+        offset = int(request.GET['iDisplayStart'])
+    except: 
+        return return_response_error(request) 
 
-    limit = int(request.GET['iDisplayLength'])
-    offset = int(request.GET['iDisplayStart'])
+    filtered_datafiles = _filter(datafiles, filter)
     dfs = [(x.id, x.filename) for x in filtered_datafiles[offset:offset+limit]]
     df_ids = [x[0] for x in dfs]
 
@@ -152,7 +165,6 @@ def _params_by_file(df_ids, parameter_names):
         if n_id not in dfps_by_name:
             dfps_by_name[n_id] = []
 
-        dfp_vals = {'datetime_value': dfp['datetime_value'], 'numerical_value': dfp['numerical_value'], 'string_value': dfp['string_value'] }
         dfps_by_name[n_id].append(dfp)
     return params_by_file
 
@@ -165,6 +177,7 @@ def _filter(datafile_queryset, filter):
         query |= Q(datafileparameterset__datafileparameter__string_value__icontains=filter)
         query |= Q(datafileparameterset__datafileparameter__numerical_value__icontains=filter)
         return datafile_queryset.filter(query).distinct()
+
 
 @authz.experiment_access_required
 def csv_export(request, experiment_id):
